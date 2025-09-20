@@ -6,12 +6,21 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io/ioutil"
 	"log"
 	"net/http"
+	"os"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
+)
+
+// Project-specific constants
+const (
+	BlockchainName = "Mesam Blockchain" // Your blockchain name
+	RollNumber     = "i22-1304"         // First transaction data in Genesis block
+	blockchainFile = "blockchain.json"
 )
 
 // Block defines the block structure
@@ -26,12 +35,12 @@ type Block struct {
 	Difficulty   int      `json:"difficulty"`
 }
 
-// Blockchain and pending txs (in-memory)
+// Blockchain and pending txs
 var (
 	blockchain          []Block
 	pendingTransactions []string
 	mutex               = &sync.Mutex{}
-	defaultDifficulty   = 4 // number of leading zeros required
+	defaultDifficulty   = 4
 )
 
 // --- Helper: SHA256 hex
@@ -40,15 +49,11 @@ func sha256hex(s string) string {
 	return hex.EncodeToString(h[:])
 }
 
-// --- Merkle tree functions
-// computeMerkleRoot accepts slice of tx strings and returns hex merkle root.
-// Simple approach: hash leaves, pairwise combine and hash up to root.
-// If odd number, duplicate last.
+// --- Merkle tree
 func computeMerkleRoot(txs []string) string {
 	if len(txs) == 0 {
-		return sha256hex("") // empty root
+		return sha256hex("")
 	}
-	// leaf hashes
 	var layer []string
 	for _, t := range txs {
 		layer = append(layer, sha256hex(t))
@@ -57,7 +62,6 @@ func computeMerkleRoot(txs []string) string {
 		var next []string
 		for i := 0; i < len(layer); i += 2 {
 			if i+1 == len(layer) {
-				// duplicate last
 				combined := layer[i] + layer[i]
 				next = append(next, sha256hex(combined))
 			} else {
@@ -70,7 +74,7 @@ func computeMerkleRoot(txs []string) string {
 	return layer[0]
 }
 
-// computeHash of a block (without Hash field)
+// computeHash of a block
 func computeHash(b Block) string {
 	record := strconv.Itoa(b.Index) +
 		strconv.FormatInt(b.Timestamp, 10) +
@@ -81,7 +85,7 @@ func computeHash(b Block) string {
 	return sha256hex(record)
 }
 
-// --- Proof of Work (simple): find nonce s.t. hash has difficulty leading zeros
+// Proof of Work
 func mineBlock(b Block, stopAfterMs int64) (Block, error) {
 	prefix := strings.Repeat("0", b.Difficulty)
 	start := time.Now()
@@ -94,32 +98,52 @@ func mineBlock(b Block, stopAfterMs int64) (Block, error) {
 			return b, nil
 		}
 		nonce++
-		// optional safety to avoid runaway loops: allow stopAfterMs ms
 		if stopAfterMs > 0 && time.Since(start) > time.Duration(stopAfterMs)*time.Millisecond {
 			return b, fmt.Errorf("mining timed out after %d ms (last nonce %d)", stopAfterMs, nonce)
 		}
 	}
 }
 
-// --- Genesis block creation
+// Genesis block
 func createGenesisBlock() Block {
 	gen := Block{
 		Index:        0,
 		Timestamp:    time.Now().Unix(),
-		Transactions: []string{"Genesis Block"},
+		Transactions: []string{RollNumber}, // ✅ Roll number as first transaction
 		PrevHash:     "",
 		Difficulty:   defaultDifficulty,
 	}
 	gen.MerkleRoot = computeMerkleRoot(gen.Transactions)
-	// Mine genesis (so Hash and Nonce set)
 	mined, err := mineBlock(gen, 0)
 	if err != nil {
-		// fallback: set hash manually
 		gen.Nonce = 0
 		gen.Hash = computeHash(gen)
 		return gen
 	}
 	return mined
+}
+
+// --- Persistence
+func saveBlockchain() error {
+	data, err := json.MarshalIndent(blockchain, "", "  ")
+	if err != nil {
+		return err
+	}
+	return ioutil.WriteFile(blockchainFile, data, 0644)
+}
+
+func loadBlockchain() error {
+	if _, err := os.Stat(blockchainFile); os.IsNotExist(err) {
+		// create genesis block
+		gen := createGenesisBlock()
+		blockchain = []Block{gen}
+		return saveBlockchain()
+	}
+	data, err := ioutil.ReadFile(blockchainFile)
+	if err != nil {
+		return err
+	}
+	return json.Unmarshal(data, &blockchain)
 }
 
 // --- Blockchain functions
@@ -144,19 +168,17 @@ func addBlock(transactions []string, difficulty int) (Block, error) {
 		return Block{}, err
 	}
 	blockchain = append(blockchain, mined)
+	_ = saveBlockchain()
 	return mined, nil
 }
 
 // --- HTTP Handlers
-
-// Simple CORS middleware
 func enableCORS(w http.ResponseWriter) {
-	w.Header().Set("Access-Control-Allow-Origin", "*") // for demo; tighten in production
+	w.Header().Set("Access-Control-Allow-Origin", "*")
 	w.Header().Set("Access-Control-Allow-Methods", "GET,POST,OPTIONS")
 	w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
 }
 
-// Add Transaction: POST /tx  { "data": "some string" }
 func handleAddTx(w http.ResponseWriter, r *http.Request) {
 	enableCORS(w)
 	if r.Method == http.MethodOptions {
@@ -180,7 +202,6 @@ func handleAddTx(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// Mine block: POST /mine  optional JSON { "difficulty": 4, "timeout_ms": 0 }
 func handleMine(w http.ResponseWriter, r *http.Request) {
 	enableCORS(w)
 	if r.Method == http.MethodOptions {
@@ -188,13 +209,12 @@ func handleMine(w http.ResponseWriter, r *http.Request) {
 	}
 	type req struct {
 		Difficulty int   `json:"difficulty"`
-		TimeoutMs  int64 `json:"timeout_ms"` // optional safe timeout in ms
+		TimeoutMs  int64 `json:"timeout_ms"`
 	}
 	var body req
-	// default values
 	body.Difficulty = defaultDifficulty
 	body.TimeoutMs = 0
-	_ = json.NewDecoder(r.Body).Decode(&body) // ignore error, we have defaults
+	_ = json.NewDecoder(r.Body).Decode(&body)
 
 	mutex.Lock()
 	if len(pendingTransactions) == 0 {
@@ -204,14 +224,12 @@ func handleMine(w http.ResponseWriter, r *http.Request) {
 	}
 	txs := make([]string, len(pendingTransactions))
 	copy(txs, pendingTransactions)
-	// clear pending txs before mining to avoid duplicates (in real world you'd lock & validate)
 	pendingTransactions = []string{}
 	mutex.Unlock()
 
 	block, err := addBlock(txs, body.Difficulty)
 	if err != nil {
 		http.Error(w, "mining failed: "+err.Error(), http.StatusInternalServerError)
-		// If mining failed, return txs back to pending
 		mutex.Lock()
 		pendingTransactions = append(pendingTransactions, txs...)
 		mutex.Unlock()
@@ -220,7 +238,6 @@ func handleMine(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(block)
 }
 
-// Get blockchain: GET /blocks
 func handleGetBlocks(w http.ResponseWriter, r *http.Request) {
 	enableCORS(w)
 	if r.Method == http.MethodOptions {
@@ -231,7 +248,6 @@ func handleGetBlocks(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(blockchain)
 }
 
-// Get pending transactions: GET /pending
 func handleGetPending(w http.ResponseWriter, r *http.Request) {
 	enableCORS(w)
 	if r.Method == http.MethodOptions {
@@ -242,7 +258,6 @@ func handleGetPending(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(pendingTransactions)
 }
 
-// Search: GET /search?q=...  returns array of matches {blockIndex, tx}
 func handleSearch(w http.ResponseWriter, r *http.Request) {
 	enableCORS(w)
 	if r.Method == http.MethodOptions {
@@ -275,19 +290,29 @@ func handleSearch(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(results)
 }
 
+func handleInfo(w http.ResponseWriter, r *http.Request) {
+	enableCORS(w)
+	info := map[string]interface{}{
+		"name":   BlockchainName,
+		"height": len(blockchain) - 1,
+	}
+	json.NewEncoder(w).Encode(info)
+}
+
 func handleRoot(w http.ResponseWriter, r *http.Request) {
 	enableCORS(w)
-	fmt.Fprintf(w, "Simple Go Blockchain API\nAvailable endpoints:\nPOST /tx {data}\nPOST /mine {difficulty?}\nGET /blocks\nGET /pending\nGET /search?q=...\n")
+	fmt.Fprintf(w, "%s API\nAvailable endpoints:\n/info\n/tx\n/mine\n/blocks\n/pending\n/search?q=...\n", BlockchainName)
 }
 
 // --- main
 func main() {
-	// initialize chain with genesis
-	gen := createGenesisBlock()
-	blockchain = append(blockchain, gen)
-	fmt.Println("Genesis block created:", gen.Hash)
+	if err := loadBlockchain(); err != nil {
+		log.Fatal("Failed to load blockchain:", err)
+	}
+	fmt.Println(BlockchainName, "loaded. Current height:", len(blockchain)-1)
 
 	http.HandleFunc("/", handleRoot)
+	http.HandleFunc("/info", handleInfo)
 	http.HandleFunc("/tx", handleAddTx)
 	http.HandleFunc("/mine", handleMine)
 	http.HandleFunc("/blocks", handleGetBlocks)
