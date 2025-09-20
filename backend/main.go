@@ -1,4 +1,3 @@
-// main.go
 package main
 
 import (
@@ -16,14 +15,12 @@ import (
 	"time"
 )
 
-// Project-specific constants
 const (
-	BlockchainName = "Mesam Blockchain" // Your blockchain name
-	RollNumber     = "i22-1304"         // First transaction data in Genesis block
+	BlockchainName = "Mesam Blockchain" 
+	RollNumber     = "i22-1304"         
 	blockchainFile = "blockchain.json"
 )
 
-// Block defines the block structure
 type Block struct {
 	Index        int      `json:"index"`
 	Timestamp    int64    `json:"timestamp"`
@@ -35,7 +32,6 @@ type Block struct {
 	Difficulty   int      `json:"difficulty"`
 }
 
-// Blockchain and pending txs
 var (
 	blockchain          []Block
 	pendingTransactions []string
@@ -43,13 +39,11 @@ var (
 	defaultDifficulty   = 4
 )
 
-// --- Helper: SHA256 hex
 func sha256hex(s string) string {
 	h := sha256.Sum256([]byte(s))
 	return hex.EncodeToString(h[:])
 }
 
-// --- Merkle tree
 func computeMerkleRoot(txs []string) string {
 	if len(txs) == 0 {
 		return sha256hex("")
@@ -74,7 +68,6 @@ func computeMerkleRoot(txs []string) string {
 	return layer[0]
 }
 
-// computeHash of a block
 func computeHash(b Block) string {
 	record := strconv.Itoa(b.Index) +
 		strconv.FormatInt(b.Timestamp, 10) +
@@ -85,7 +78,6 @@ func computeHash(b Block) string {
 	return sha256hex(record)
 }
 
-// Proof of Work
 func mineBlock(b Block, stopAfterMs int64) (Block, error) {
 	prefix := strings.Repeat("0", b.Difficulty)
 	start := time.Now()
@@ -104,12 +96,11 @@ func mineBlock(b Block, stopAfterMs int64) (Block, error) {
 	}
 }
 
-// Genesis block
 func createGenesisBlock() Block {
 	gen := Block{
 		Index:        0,
 		Timestamp:    time.Now().Unix(),
-		Transactions: []string{RollNumber}, // ✅ Roll number as first transaction
+		Transactions: []string{RollNumber}, 
 		PrevHash:     "",
 		Difficulty:   defaultDifficulty,
 	}
@@ -123,7 +114,6 @@ func createGenesisBlock() Block {
 	return mined
 }
 
-// --- Persistence
 func saveBlockchain() error {
 	data, err := json.MarshalIndent(blockchain, "", "  ")
 	if err != nil {
@@ -134,7 +124,6 @@ func saveBlockchain() error {
 
 func loadBlockchain() error {
 	if _, err := os.Stat(blockchainFile); os.IsNotExist(err) {
-		// create genesis block
 		gen := createGenesisBlock()
 		blockchain = []Block{gen}
 		return saveBlockchain()
@@ -146,7 +135,6 @@ func loadBlockchain() error {
 	return json.Unmarshal(data, &blockchain)
 }
 
-// --- Blockchain functions
 func getLastBlock() Block {
 	return blockchain[len(blockchain)-1]
 }
@@ -172,7 +160,6 @@ func addBlock(transactions []string, difficulty int) (Block, error) {
 	return mined, nil
 }
 
-// --- HTTP Handlers
 func enableCORS(w http.ResponseWriter) {
 	w.Header().Set("Access-Control-Allow-Origin", "*")
 	w.Header().Set("Access-Control-Allow-Methods", "GET,POST,OPTIONS")
@@ -304,7 +291,6 @@ func handleRoot(w http.ResponseWriter, r *http.Request) {
 	fmt.Fprintf(w, "%s API\nAvailable endpoints:\n/info\n/tx\n/mine\n/blocks\n/pending\n/search?q=...\n", BlockchainName)
 }
 
-// --- main
 func main() {
 	if err := loadBlockchain(); err != nil {
 		log.Fatal("Failed to load blockchain:", err)
